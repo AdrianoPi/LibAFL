@@ -3,6 +3,8 @@
 pub mod simple;
 pub use simple::*;
 pub mod llmp;
+mod mpi_noscope;
+
 pub use llmp::*;
 
 use alloc::{string::String, vec::Vec};
