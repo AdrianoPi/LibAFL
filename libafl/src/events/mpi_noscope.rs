@@ -19,7 +19,7 @@ impl Drop for NoScope {
     }
 }
 
-unsafe impl<'a> Scope<'a> for NoScope {
+unsafe impl Scope<'static> for NoScope {
     fn register(&self) {}
 
     unsafe fn unregister(&self) {}
