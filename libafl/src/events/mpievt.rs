@@ -1,14 +1,9 @@
 //! A very simple event manager, that just supports log outputs, but no multiprocessing
 
-use crate::{
-    events::{
-        BrokerEventResult, Event, EventFirer, EventManager, EventManagerId, EventProcessor,
-        EventRestarter, HasEventManagerId,
-    },
-    inputs::Input,
-    stats::Stats,
-    Error,
-};
+use crate::{events::{
+    BrokerEventResult, Event, EventFirer, EventManager, EventManagerId, EventProcessor,
+    EventRestarter, HasEventManagerId,
+}, inputs::Input, stats::Stats, Error, ExecutionProcessor, EvaluatorObservers};
 use alloc::{string::ToString, vec::Vec};
 #[cfg(feature = "std")]
 use core::{
@@ -29,6 +24,11 @@ use crate::{
     corpus::Corpus,
     state::{HasCorpus, HasSolutions},
 };
+use crate::observers::ObserversTuple;
+use crate::executors::{Executor, HasObservers};
+use mpi::topology::{Communicator, Rank, SystemCommunicator};
+use mpi::point_to_point::{Source, Destination};
+use mpi::Threading;
 
 /// The llmp connection from the actual fuzzer to the process supervising it
 const _ENV_FUZZER_SENDER: &str = "_AFL_ENV_FUZZER_SENDER";
@@ -38,7 +38,7 @@ const _ENV_FUZZER_BROKER_CLIENT_INITIAL: &str = "_AFL_ENV_FUZZER_BROKER_CLIENT";
 
 /// A simple, single-threaded event manager that just logs
 #[derive(Clone, Debug)]
-pub struct SimpleEventManager<I, ST>
+pub struct MPIEventManager<I, ST>
 where
     I: Input,
     ST: Stats, //CE: CustomEvent<I, OT>,
@@ -46,58 +46,96 @@ where
     /// The stats
     stats: ST,
     /// The events that happened since the last handle_in_broker
-    events: Vec<Event<I>>,
+    requests: Vec<Request<I>>,
+    communicator: SystemCommunicator,
+    processor_ct: Rank,
+    rank: Rank,
+    events: Vec<Vec<u8>>,
 }
 
-impl<I, S, ST> EventFirer<I, S> for SimpleEventManager<I, ST>
+/// Send events with MPI
+impl<I, S, ST> EventFirer<I, S> for MPIEventManager<I, ST>
 where
     I: Input,
     ST: Stats, //CE: CustomEvent<I, OT>,
 {
     fn fire(&mut self, _state: &mut S, event: Event<I>) -> Result<(), Error> {
         match Self::handle_in_broker(&mut self.stats, &event)? {
-            BrokerEventResult::Forward => self.events.push(event),
+            // Send the event with MPI
+            BrokerEventResult::Forward => {
+                let serialized = postcard::to_allocvec(&event)?;
+                self.events.push(serialized);
+
+                for i in 0..self.processor_ct {
+                    if i==self.rank { continue }
+
+                    let req = self.communicator.process_at_rank(i).immediate_send(NO_SCOPE, &serialized[..]);
+
+                    self.requests.push(req);
+
+                }
+            }
             BrokerEventResult::Handled => (),
         };
         Ok(())
     }
 }
 
-impl<I, S, ST> EventRestarter<S> for SimpleEventManager<I, ST>
+impl<I, S, ST> EventRestarter<S> for MPIEventManager<I, ST>
 where
     I: Input,
     ST: Stats, //CE: CustomEvent<I, OT>,
 {
 }
 
-impl<E, I, S, ST, Z> EventProcessor<E, I, S, Z> for SimpleEventManager<I, ST>
+// TODO MODIFICARE PROCESS.
+/// Extract and process events from MPI
+impl<E, I, S, ST, Z> EventProcessor<E, I, S, Z> for MPIEventManager<I, ST>
 where
     I: Input,
     ST: Stats, //CE: CustomEvent<I, OT>,
 {
     fn process(
         &mut self,
-        _fuzzer: &mut Z,
+        fuzzer: &mut Z,
         state: &mut S,
-        _executor: &mut E,
+        executor: &mut E,
     ) -> Result<usize, Error> {
-        let count = self.events.len();
-        while !self.events.is_empty() {
-            let event = self.events.pop().unwrap();
-            self.handle_in_client(state, event)?;
+        // Come scope utilizziamo events::mpi_noscope::NO_SCOPE
+
+        /* loop in which we:
+            > poll MPI for new events
+            > If present, we extract one event from MPI (which is now bytes)
+            > We postcard::from_bytes the event, making it of type Event<I>
+            > We handle_in_client the event
+        */
+        loop{
+            if let Some(_) = self.communicator.any_process().immediate_probe(){
+            } else {
+                break;
+            }
+
+            let event_bytes: Vec<u8> = self.communicator.any_process().receive_vec()[0];
+            let event: Event<I> = postcard::from_bytes(&event_bytes)?;
+
+            // We have an event!
+            // let event: Event<I> = postcard::from_bytes(event_bytes)?;
+
+            self.handle_in_client(fuzzer, executor, state, 0, event)?;
         }
+
         Ok(count)
     }
 }
 
-impl<E, I, S, ST, Z> EventManager<E, I, S, Z> for SimpleEventManager<I, ST>
+impl<E, I, S, ST, Z> EventManager<E, I, S, Z> for MPIEventManager<I, ST>
 where
     I: Input,
     ST: Stats, //CE: CustomEvent<I, OT>,
 {
 }
 
-impl<I, ST> HasEventManagerId for SimpleEventManager<I, ST>
+impl<I, ST> HasEventManagerId for MPIEventManager<I, ST>
 where
     I: Input,
     ST: Stats,
@@ -107,15 +145,30 @@ where
     }
 }
 
-impl<I, ST> SimpleEventManager<I, ST>
+impl<I, ST> MPIEventManager<I, ST>
 where
     I: Input,
     ST: Stats, //TODO CE: CustomEvent,
 {
-    /// Creates a new [`SimpleEventManager`].
+    // TODO Inizializza MPI
+    /// Creates a new [`MPIEventManager`].
     pub fn new(stats: ST) -> Self {
+
+        // Initta MPI
+        // Trova own rank
+
+        let (universe, threading) = mpi::initialize_with_threading(Threading::Single).unwrap();
+
+        let world_communicator = universe.world();
+        let rank = world_communicator.rank();
+        let size = world_communicator.size();
+
         Self {
             stats,
+            requests: vec![],
+            communicator: world_communicator,
+            processor_ct: size,
+            rank,
             events: vec![],
         }
     }
@@ -140,7 +193,7 @@ where
                     .client_stats_mut_for(0)
                     .update_executions(*executions as u64, *time);
                 stats.display(event.name().to_string(), 0);
-                Ok(BrokerEventResult::Handled)
+                Ok(BrokerEventResult::Forward)
             }
             Event::UpdateStats {
                 time,
@@ -200,12 +253,53 @@ where
     }
 
     // Handle arriving events in the client
-    #[allow(clippy::needless_pass_by_value, clippy::unused_self)]
-    fn handle_in_client<S>(&mut self, _state: &mut S, event: Event<I>) -> Result<(), Error> {
-        Err(Error::Unknown(format!(
-            "Received illegal message that message should not have arrived: {:?}.",
-            event
-        )))
+    #[allow(clippy::unused_self)]
+    fn handle_in_client<E, Z>(
+        &mut self,
+        fuzzer: &mut Z,
+        executor: &mut E,
+        state: &mut S,
+        _client_id: u32,
+        event: Event<I>,
+    ) -> Result<(), Error>
+        where
+            OT: ObserversTuple<I, S> + serde::de::DeserializeOwned,
+            E: Executor<Self, I, S, Z> + HasObservers<I, OT, S>,
+            Z: ExecutionProcessor<I, OT, S> + EvaluatorObservers<I, OT, S>,
+    {
+        match event {
+            Event::NewTestcase {
+                input,
+                client_config,
+                exit_kind,
+                corpus_size: _,
+                observers_buf,
+                time: _,
+                executions: _,
+            } => {
+                #[cfg(feature = "std")]
+                println!(
+                    "Received new Testcase from {} ({})",
+                    _client_id, client_config
+                );
+
+                let _res = if client_config == self.configuration {
+                    let observers: OT = postcard::from_bytes(&observers_buf)?;
+                    fuzzer.process_execution(state, self, input, &observers, &exit_kind, false)?
+                } else {
+                    fuzzer.evaluate_input_with_observers(state, executor, self, input, false)?
+                };
+                #[cfg(feature = "std")]
+                if let Some(item) = _res.1 {
+                    println!("Added received Testcase as item #{}", item);
+                }
+                Ok(())
+            }
+            _ => Err(Error::Unknown(format!(
+                "Received illegal message that message should not have arrived: {:?}.",
+                event.name()
+            ))),
+        }
     }
 }
 
@@ -223,7 +317,7 @@ where
     ST: Stats, //CE: CustomEvent<I, OT>,
 {
     /// The actual simple event mgr
-    simple_event_mgr: SimpleEventManager<I, ST>,
+    simple_event_mgr: MPIEventManager<I, ST>,
     /// [`StateRestorer`] for restarts
     staterestorer: StateRestorer<SP>,
     /// Phantom data
@@ -316,11 +410,11 @@ where
     SP: ShMemProvider,
     ST: Stats, //TODO CE: CustomEvent,
 {
-    /// Creates a new [`SimpleEventManager`].
+    /// Creates a new [`MPIEventManager`].
     fn new_launched(stats: ST, staterestorer: StateRestorer<SP>) -> Self {
         Self {
             staterestorer,
-            simple_event_mgr: SimpleEventManager::new(stats),
+            simple_event_mgr: MPIEventManager::new(stats),
             _phantom: PhantomData {},
         }
     }

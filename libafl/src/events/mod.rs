@@ -3,6 +3,7 @@
 pub mod simple;
 pub use simple::*;
 pub mod llmp;
+pub mod mpievt;
 mod mpi_noscope;
 
 pub use llmp::*;

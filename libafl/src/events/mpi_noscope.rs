@@ -24,3 +24,5 @@ unsafe impl<'a> Scope<'a> for NoScope {
 
     unsafe fn unregister(&self) {}
 }
+
+pub const NO_SCOPE: NoScope = NoScope{};
