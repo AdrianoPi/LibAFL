@@ -1,4 +1,5 @@
 use mpi::request::Scope;
+use core::marker::PhantomData;
 
 /// A temporary scope that lasts no more than the lifetime `'a`
 ///
@@ -9,20 +10,19 @@ use mpi::request::Scope;
 /// # Invariant
 ///
 /// For any `Request` registered with a `NoScope<'a>`, its associated buffers must outlive `'a`.
-#[derive(Debug)]
-pub struct NoScope {
+#[derive(Debug, Clone, Copy)]
+pub struct NoScope<'a> {
+    phantom: PhantomData<&'a ()>
 }
 
-impl Drop for NoScope {
-    fn drop(&mut self) {
-        // Do nothing! Don't babysit me
-    }
-}
-
-unsafe impl Scope<'static> for NoScope {
+unsafe impl<'a> Scope<'a> for NoScope<'a> {
     fn register(&self) {}
 
     unsafe fn unregister(&self) {}
 }
 
-pub const NO_SCOPE: NoScope = NoScope{};
+pub fn get_scope<'a>() -> NoScope<'a> {
+    NoScope{
+        phantom: PhantomData{}
+    }
+}

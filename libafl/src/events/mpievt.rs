@@ -8,50 +8,31 @@ use alloc::{string::ToString, vec::Vec};
 #[cfg(feature = "std")]
 use core::{
     marker::PhantomData,
-    sync::atomic::{compiler_fence, Ordering},
 };
-#[cfg(feature = "std")]
-use serde::{Serialize};
 
 #[cfg(all(feature = "std", windows))]
 use crate::bolts::os::startable_self;
 #[cfg(all(feature = "std", unix))]
 //use crate::bolts::os::{fork, ForkResult};
-#[cfg(feature = "std")]
-use crate::{
-    bolts::{shmem::ShMemProvider, staterestore::StateRestorer},
-    corpus::Corpus,
-    state::{HasCorpus, HasSolutions},
-};
 use crate::observers::ObserversTuple;
 use crate::executors::{Executor, HasObservers};
 use mpi::topology::{Communicator, Rank, SystemCommunicator};
 use mpi::point_to_point::{Source, Destination};
 use mpi::Threading;
-use crate::events::mpi_noscope::{NO_SCOPE, NoScope};
-use mpi::request::Request;
-
-/// The llmp connection from the actual fuzzer to the process supervising it
-const _ENV_FUZZER_SENDER: &str = "_AFL_ENV_FUZZER_SENDER";
-const _ENV_FUZZER_RECEIVER: &str = "_AFL_ENV_FUZZER_RECEIVER";
-/// The llmp (2 way) connection from a fuzzer to the broker (broadcasting all other fuzzer messages)
-const _ENV_FUZZER_BROKER_CLIENT_INITIAL: &str = "_AFL_ENV_FUZZER_BROKER_CLIENT";
 
 /// A simple, single-threaded event manager that just logs
 pub struct MPIEventManager<I, ST, OT, S>
 where
     I: Input,
-    ST: Stats, //CE: CustomEvent<I, OT>,
-    OT: ObserversTuple<I, S>,
+    ST: Stats,
+    OT: ObserversTuple<I, S> + serde::de::DeserializeOwned,
 {
     /// The stats
     stats: ST,
-    /// The events that happened since the last handle_in_broker
-    requests: Vec<Request<'static, NoScope>>,
+    /// The events that happened since the last handle_in_broke
     communicator: SystemCommunicator,
     processor_ct: Rank,
     rank: Rank,
-    events: Vec<Vec<u8>>,
     phantom: PhantomData<(I, OT, S)>,
 }
 
@@ -59,24 +40,20 @@ where
 impl<I, S, ST, OT> EventFirer<I, S> for MPIEventManager<I, ST, OT, S>
 where
     I: Input,
-    ST: Stats, //CE: CustomEvent<I, OT>,
-    OT: ObserversTuple<I, S>,
+    ST: Stats,
+    OT: ObserversTuple<I, S> + serde::de::DeserializeOwned,
 {
     fn fire(&mut self, _state: &mut S, event: Event<I>) -> Result<(), Error> {
         match Self::handle_in_broker(&mut self.stats, &event)? {
             // Send the event with MPI
             BrokerEventResult::Forward => {
                 let serialized = postcard::to_allocvec(&event)?;
-                self.events.push(serialized);
-
                 for i in 0..self.processor_ct {
                     if i==self.rank { continue }
 
-                    let req = self.communicator.process_at_rank(i).immediate_send(NO_SCOPE, &serialized[..]);
-
-                    self.requests.push(req);
-
+                    self.communicator.process_at_rank(i).send(&serialized[..]);
                 }
+
             }
             BrokerEventResult::Handled => (),
         };
@@ -87,18 +64,18 @@ where
 impl<I, S, ST, OT> EventRestarter<S> for MPIEventManager<I, ST, OT, S>
 where
     I: Input,
-    ST: Stats, //CE: CustomEvent<I, OT>,
-    OT: ObserversTuple<I, S>,
+    ST: Stats,
+    OT: ObserversTuple<I, S> + serde::de::DeserializeOwned,
 {
 }
 
-// TODO MODIFICARE PROCESS.
-/// Extract and process events from MPI
 impl<E, I, S, ST, Z, OT> EventProcessor<E, I, S, Z> for MPIEventManager<I, ST, OT, S>
 where
     I: Input,
-    ST: Stats, //CE: CustomEvent<I, OT>,
-    OT: ObserversTuple<I, S>,
+    E: Executor<Self, I, S, Z> + HasObservers<I, OT, S>,
+    ST: Stats,
+    OT: ObserversTuple<I, S> + serde::de::DeserializeOwned,
+    Z: ExecutionProcessor<I, OT, S> + EvaluatorObservers<I, OT, S>,
 {
     fn process(
         &mut self,
@@ -106,17 +83,8 @@ where
         state: &mut S,
         executor: &mut E,
     ) -> Result<usize, Error> {
-        // Come scope utilizziamo events::mpi_noscope::NO_SCOPE
-
-        /* loop in which we:
-            > poll MPI for new events
-            > If present, we extract one event from MPI (which is now bytes)
-            > We postcard::from_bytes the event, making it of type Event<I>
-            > We handle_in_client the event
-        */
 
         let mut count = 0;
-
         loop{
             if let Some(_) = self.communicator.any_process().immediate_probe(){
             } else {
@@ -125,9 +93,6 @@ where
 
             let event_bytes: Vec<u8> = self.communicator.any_process().receive_vec().0;
             let event: Event<I> = postcard::from_bytes(&event_bytes)?;
-
-            // We have an event!
-            // let event: Event<I> = postcard::from_bytes(event_bytes)?;
 
             self.handle_in_client(fuzzer, executor, state, 0, event)?;
             count += 1;
@@ -140,8 +105,10 @@ where
 impl<E, I, S, ST, Z, OT> EventManager<E, I, S, Z> for MPIEventManager<I, ST, OT, S>
 where
     I: Input,
-    ST: Stats, //CE: CustomEvent<I, OT>,
-    OT: ObserversTuple<I, S>,
+    E: Executor<Self, I, S, Z> + HasObservers<I, OT, S>,
+    ST: Stats,
+    OT: ObserversTuple<I, S> + serde::de::DeserializeOwned,
+    Z: ExecutionProcessor<I, OT, S> + EvaluatorObservers<I, OT, S>,
 {
 }
 
@@ -149,7 +116,7 @@ impl<I, ST, OT, S> HasEventManagerId for MPIEventManager<I, ST, OT, S>
 where
     I: Input,
     ST: Stats,
-    OT: ObserversTuple<I, S>,
+    OT: ObserversTuple<I, S> + serde::de::DeserializeOwned,
 {
     fn mgr_id(&self) -> EventManagerId {
         EventManagerId { id: 0 }
@@ -159,10 +126,9 @@ where
 impl<I, ST, OT, S> MPIEventManager<I, ST, OT, S>
 where
     I: Input,
-    ST: Stats, //TODO CE: CustomEvent,
-    OT: ObserversTuple<I, S>,
+    ST: Stats,
+    OT: ObserversTuple<I, S> + serde::de::DeserializeOwned,
 {
-    // TODO Inizializza MPI
     /// Creates a new [`MPIEventManager`].
     pub fn new(stats: ST) -> Self {
 
@@ -174,11 +140,10 @@ where
 
         Self {
             stats,
-            requests: vec![],
             communicator: world_communicator,
             processor_ct: size,
             rank,
-            events: vec![],
+            phantom: PhantomData{}
         }
     }
 
@@ -266,7 +231,7 @@ where
     fn handle_in_client<E, Z>(
         &mut self,
         fuzzer: &mut Z,
-        executor: &mut E,
+        _executor: &mut E,
         state: &mut S,
         _client_id: u32,
         event: Event<I>,
@@ -292,12 +257,9 @@ where
                     _client_id, client_config
                 );
 
-                let _res = if client_config == self.configuration {
-                    let observers: OT = postcard::from_bytes(&observers_buf)?;
-                    fuzzer.process_execution(state, self, input, &observers, &exit_kind, false)?
-                } else {
-                    fuzzer.evaluate_input_with_observers(state, executor, self, input, false)?
-                };
+                let observers: OT = postcard::from_bytes( & observers_buf)?;
+                let _res = fuzzer.process_execution(state, self, input, &observers, &exit_kind, false)?;
+
                 #[cfg(feature = "std")]
                 if let Some(item) = _res.1 {
                     println!("Added received Testcase as item #{}", item);
