@@ -20,6 +20,7 @@ use mpi::topology::{Communicator, Rank, SystemCommunicator};
 use mpi::point_to_point::{Source, Destination};
 use mpi::Threading;
 use mpi::request::{Request, NoScope, no_scope};
+use mpi::environment::Universe;
 
 /// A simple, single-threaded event manager that just logs
 pub struct MPIEventManager<'r, 's, I, ST, OT, S>
@@ -32,6 +33,7 @@ where
     stats: ST,
     /// The events that happened since the last handle_in_broke
     requests: Vec<Request<'r, 's, NoScope<'s>>>,
+    universe: Universe,
     communicator: SystemCommunicator,
     processor_ct: Rank,
     rank: Rank,
@@ -59,7 +61,6 @@ where
 
                     let req = self.communicator.process_at_rank(i).immediate_send(self.scope, &self.events.last().unwrap()[..]);
                     self.requests.push(req);
-                    // self.communicator.process_at_rank(i).send(&serialized[..]);
                 }
 
             }
@@ -151,6 +152,7 @@ where
         Self {
             stats,
             requests: vec![],
+            universe: universe,
             communicator: world_communicator,
             processor_ct: size,
             rank,
