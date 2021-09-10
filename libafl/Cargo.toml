@@ -55,7 +55,8 @@ path = "./examples/llmp_test/main.rs"
 required-features = ["std"]
 
 [dependencies]
-mpi = { git = "https://github.com/bsteinb/rsmpi" }
+#mpi = { git = "https://github.com/bsteinb/rsmpi" }
+mpi = { path = "../../rsmpi/" }
 tuple_list = { version = "0.1.2", git = "https://github.com/domenukk/tuple_list", branch = "main" }
 hashbrown =  { version = "0.9", features = ["serde", "ahash-compile-time-rng"], default-features=false } # A faster hashmap, nostd compatible
 num = { version = "0.4.0", default-features = false }
