@@ -32,8 +32,8 @@ where
     /// The stats
     stats: ST,
     /// The events that happened since the last handle_in_broke
-    requests: Vec<Request<'r, 's, NoScope<'s>>>,
-    universe: Universe,
+    requests: Vec<Vec<Request<'r, 's, NoScope<'s>>>>,
+    _universe: Universe,
     communicator: SystemCommunicator,
     processor_ct: Rank,
     rank: Rank,
@@ -55,14 +55,14 @@ where
             BrokerEventResult::Forward => {
                 let serialized = postcard::to_allocvec(&event)?;
                 self.events.push(serialized);
-
+                let mut v = Vec::new();
                 for i in 0..self.processor_ct {
                     if i==self.rank { continue }
 
                     let req = self.communicator.process_at_rank(i).immediate_send(self.scope, &self.events.last().unwrap()[..]);
-                    self.requests.push(req);
+                    v.push(req);
                 }
-
+                self.requests.push(v);
             }
             BrokerEventResult::Handled => (),
         };
@@ -92,6 +92,26 @@ where
         state: &mut S,
         executor: &mut E,
     ) -> Result<usize, Error> {
+
+        for i in (0 .. self.events.len()).rev() {
+            while !self.requests[i].is_empty() {
+                let r = self.requests[i].pop().expect("THA HELL");
+                match r.test() {
+                    Ok(_) => {
+
+                    } ,
+                    Err(req) => {
+                        self.requests[i].push(req);
+                        break;
+                    }
+                }
+            }
+
+            if self.requests[i].is_empty() {
+                self.requests.remove(i);
+                self.events.remove(i);
+            }
+        }
 
         let mut count = 0;
         loop{
@@ -141,7 +161,7 @@ where
     /// Creates a new [`MPIEventManager`].
     pub fn new(stats: ST) -> Self {
 
-        let (universe, _threading) = mpi::initialize_with_threading(Threading::Single).unwrap();
+        let (universe, _threading) = mpi::initialize_with_threading(Threading::Multiple).unwrap();
 
         let world_communicator = universe.world();
         let rank = world_communicator.rank();
@@ -152,7 +172,7 @@ where
         Self {
             stats,
             requests: vec![],
-            universe: universe,
+            _universe: universe,
             communicator: world_communicator,
             processor_ct: size,
             rank,
