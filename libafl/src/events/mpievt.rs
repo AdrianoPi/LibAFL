@@ -50,7 +50,7 @@ where
     OT: ObserversTuple<I, S> + serde::de::DeserializeOwned,
 {
     fn fire(&mut self, _state: &mut S, event: Event<I>) -> Result<(), Error> {
-        match Self::handle_in_broker(&mut self.stats, &event)? {
+        match Self::handle_in_broker(&mut self.stats, &event, self.rank as u32)? {
             // Send the event with MPI
             BrokerEventResult::Forward => {
                 let serialized = postcard::to_allocvec(&event)?;
@@ -184,7 +184,7 @@ where
 
     // Handle arriving events in the broker
     #[allow(clippy::unnecessary_wraps)]
-    fn handle_in_broker(stats: &mut ST, event: &Event<I>) -> Result<BrokerEventResult, Error> {
+    fn handle_in_broker(stats: &mut ST, event: &Event<I>, id: u32) -> Result<BrokerEventResult, Error> {
         match event {
             Event::NewTestcase {
                 input: _,
@@ -201,7 +201,7 @@ where
                 stats
                     .client_stats_mut_for(0)
                     .update_executions(*executions as u64, *time);
-                stats.display(event.name().to_string(), 0);
+                stats.display(event.name().to_string(), id);
                 Ok(BrokerEventResult::Forward)
             }
             Event::UpdateStats {
@@ -213,7 +213,7 @@ where
                 stats
                     .client_stats_mut_for(0)
                     .update_executions(*executions as u64, *time);
-                stats.display(event.name().to_string(), 0);
+                stats.display(event.name().to_string(), id);
                 Ok(BrokerEventResult::Handled)
             }
             Event::UpdateUserStats {
@@ -224,7 +224,7 @@ where
                 stats
                     .client_stats_mut_for(0)
                     .update_user_stats(name.clone(), value.clone());
-                stats.display(event.name().to_string(), 0);
+                stats.display(event.name().to_string(), id);
                 Ok(BrokerEventResult::Handled)
             }
             #[cfg(feature = "introspection")]
@@ -238,14 +238,14 @@ where
                 stats.client_stats_mut()[0].update_executions(*executions as u64, *time);
                 stats.client_stats_mut()[0]
                     .update_introspection_stats((**introspection_stats).clone());
-                stats.display(event.name().to_string(), 0);
+                stats.display(event.name().to_string(), id);
                 Ok(BrokerEventResult::Handled)
             }
             Event::Objective { objective_size } => {
                 stats
                     .client_stats_mut_for(0)
                     .update_objective_size(*objective_size as u64);
-                stats.display(event.name().to_string(), 0);
+                stats.display(event.name().to_string(), id);
                 Ok(BrokerEventResult::Handled)
             }
             Event::Log {
