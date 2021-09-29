@@ -19,11 +19,11 @@ use crate::executors::{Executor, HasObservers};
 use mpi::topology::{Communicator, Rank, SystemCommunicator};
 use mpi::point_to_point::{Source, Destination};
 use mpi::Threading;
-use mpi::request::{Request, NoScope, no_scope};
+use mpi::request::{UnsafeRequest};
 use mpi::environment::Universe;
 
 /// A simple, single-threaded event manager that just logs
-pub struct MPIEventManager<'r, 's, I, ST, OT, S>
+pub struct MPIEventManager<I, ST, OT, S>
 where
     I: Input,
     ST: Stats,
@@ -32,18 +32,17 @@ where
     /// The stats
     stats: ST,
     /// The events that happened since the last handle_in_broke
-    requests: Vec<Vec<Request<'r, 's, NoScope<'s>>>>,
+    requests: Vec<Vec<UnsafeRequest>>,
     _universe: Universe,
     communicator: SystemCommunicator,
     processor_ct: Rank,
     rank: Rank,
     events: Vec<Vec<u8>>,
-    scope: NoScope<'s>,
     phantom: PhantomData<(I, OT, S)>,
 }
 
 /// Send events with MPI
-impl<'r, 's, I, S, ST, OT> EventFirer<I, S> for MPIEventManager<'r, 's, I, ST, OT, S>
+impl<I, S, ST, OT> EventFirer<I, S> for MPIEventManager<I, ST, OT, S>
 where
     I: Input,
     ST: Stats,
@@ -54,14 +53,15 @@ where
             // Send the event with MPI
             BrokerEventResult::Forward => {
                 let serialized = postcard::to_allocvec(&event)?;
-                self.events.push(serialized);
                 let mut v = Vec::new();
                 for i in 0..self.processor_ct {
                     if i==self.rank { continue }
 
-                    let req = self.communicator.process_at_rank(i).immediate_send(self.scope, &self.events.last().unwrap()[..]);
+                    let req = self.communicator.process_at_rank(i)
+                        .unsafe_immediate_send( &serialized[..], );
                     v.push(req);
                 }
+                self.events.push(serialized);
                 self.requests.push(v);
             }
             BrokerEventResult::Handled => (),
@@ -70,7 +70,7 @@ where
     }
 }
 
-impl<'r, 's, I, S, ST, OT> EventRestarter<S> for MPIEventManager<'r, 's, I, ST, OT, S>
+impl<I, S, ST, OT> EventRestarter<S> for MPIEventManager<I, ST, OT, S>
 where
     I: Input,
     ST: Stats,
@@ -78,7 +78,7 @@ where
 {
 }
 
-impl<'r, 's, E, I, S, ST, Z, OT> EventProcessor<E, I, S, Z> for MPIEventManager<'r, 's, I, ST, OT, S>
+impl<E, I, S, ST, Z, OT> EventProcessor<E, I, S, Z> for MPIEventManager<I, ST, OT, S>
 where
     I: Input,
     E: Executor<Self, I, S, Z> + HasObservers<I, OT, S>,
@@ -131,7 +131,7 @@ where
     }
 }
 
-impl<'r, 's, E, I, S, ST, Z, OT> EventManager<E, I, S, Z> for MPIEventManager<'r, 's, I, ST, OT, S>
+impl<E, I, S, ST, Z, OT> EventManager<E, I, S, Z> for MPIEventManager<I, ST, OT, S>
 where
     I: Input,
     E: Executor<Self, I, S, Z> + HasObservers<I, OT, S>,
@@ -141,7 +141,7 @@ where
 {
 }
 
-impl<'r, 's, I, ST, OT, S> HasEventManagerId for MPIEventManager<'r, 's, I, ST, OT, S>
+impl<I, ST, OT, S> HasEventManagerId for MPIEventManager<I, ST, OT, S>
 where
     I: Input,
     ST: Stats,
@@ -152,7 +152,7 @@ where
     }
 }
 
-impl<'r, 's, I, ST, OT, S> MPIEventManager<'r, 's, I, ST, OT, S>
+impl<I, ST, OT, S> MPIEventManager<I, ST, OT, S>
 where
     I: Input,
     ST: Stats,
@@ -167,8 +167,6 @@ where
         let rank = world_communicator.rank();
         let size = world_communicator.size();
 
-        let scope = no_scope();
-
         Self {
             stats,
             requests: vec![],
@@ -177,7 +175,6 @@ where
             processor_ct: size,
             rank,
             events: vec![],
-            scope,
             phantom: PhantomData{}
         }
     }
