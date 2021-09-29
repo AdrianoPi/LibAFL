@@ -19,7 +19,6 @@ use crate::executors::{Executor, HasObservers};
 use mpi::topology::{Communicator, Rank, SystemCommunicator};
 use mpi::point_to_point::{Source, Destination};
 use mpi::Threading;
-use mpi::request::{UnsafeRequest};
 use mpi::environment::Universe;
 
 /// A simple, single-threaded event manager that just logs
@@ -32,12 +31,10 @@ where
     /// The stats
     stats: ST,
     /// The events that happened since the last handle_in_broke
-    requests: Vec<Vec<UnsafeRequest>>,
     _universe: Universe,
     communicator: SystemCommunicator,
     processor_ct: Rank,
     rank: Rank,
-    events: Vec<Vec<u8>>,
     phantom: PhantomData<(I, OT, S)>,
 }
 
@@ -53,16 +50,12 @@ where
             // Send the event with MPI
             BrokerEventResult::Forward => {
                 let serialized = postcard::to_allocvec(&event)?;
-                let mut v = Vec::new();
+                //let mut v = Vec::new();
                 for i in 0..self.processor_ct {
                     if i==self.rank { continue }
 
-                    let req = self.communicator.process_at_rank(i)
-                        .unsafe_immediate_send( &serialized[..], );
-                    v.push(req);
+                    self.communicator.process_at_rank(i).send( &serialized[..], );
                 }
-                self.events.push(serialized);
-                self.requests.push(v);
             }
             BrokerEventResult::Handled => (),
         };
@@ -92,26 +85,6 @@ where
         state: &mut S,
         executor: &mut E,
     ) -> Result<usize, Error> {
-
-        for i in (0 .. self.events.len()).rev() {
-            while !self.requests[i].is_empty() {
-                let r = self.requests[i].pop().expect("THA HELL");
-                match r.test() {
-                    Ok(_) => {
-
-                    } ,
-                    Err(req) => {
-                        self.requests[i].push(req);
-                        break;
-                    }
-                }
-            }
-
-            if self.requests[i].is_empty() {
-                self.requests.remove(i);
-                self.events.remove(i);
-            }
-        }
 
         let mut count = 0;
         loop{
@@ -169,12 +142,10 @@ where
 
         Self {
             stats,
-            requests: vec![],
             _universe: universe,
             communicator: world_communicator,
             processor_ct: size,
             rank,
-            events: vec![],
             phantom: PhantomData{}
         }
     }
