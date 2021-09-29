@@ -1,6 +1,8 @@
 FUZZER_NAME="fuzzer_libpng"
 PROJECT_DIR=$(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 UNAME := $(shell uname)
+MPI_CFLAGS := $(shell mpicc --showme:compile)
+MPI_LDFLAGS := $(shell mpicc --showme:link)
 
 PHONY: all libafl_cc libafl_cxx
 
@@ -19,7 +21,7 @@ libafl_cxx: target/release/libafl_cxx
 libafl_cc: target/release/libafl_cxx
 
 libpng-1.6.37/.libs/libpng16.a: libpng-1.6.37 libafl_cc
-	cd libpng-1.6.37 && ./configure --enable-shared=no --with-pic=yes --enable-hardware-optimizations=yes
+	cd libpng-1.6.37 && env CFLAGS="$(MPI_CFLAGS)" LDFLAGS="$(MPI_LDFLAGS)" ./configure --enable-shared=no --with-pic=yes --enable-hardware-optimizations=yes
 	$(MAKE) -C libpng-1.6.37 CC="$(PROJECT_DIR)/target/release/libafl_cc" CXX="$(PROJECT_DIR)/target/release/libafl_cxx"
 
 
@@ -33,7 +35,8 @@ fuzzer: libpng-1.6.37/.libs/libpng16.a libafl_cxx
 		$(PROJECT_DIR)/libpng-1.6.37/.libs/libpng16.a \
 		-I$(PROJECT_DIR)/libpng-1.6.37/ \
 		-o $(FUZZER_NAME) \
-		-lm -lz
+		-lm -lz \
+		$(MPI_LDFLAGS)
 
 clean:
 	$(MAKE) -C libpng-1.6.37 clean
