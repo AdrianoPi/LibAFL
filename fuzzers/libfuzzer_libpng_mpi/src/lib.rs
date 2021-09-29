@@ -49,14 +49,13 @@ pub fn libafl_main() {
     );
     fuzz(
         &[PathBuf::from("./corpus")],
-        PathBuf::from("./crashes"),
-        1337,
+        PathBuf::from("./crashes")
     )
     .expect("An error occurred while fuzzing");
 }
 
 /// The actual fuzzer
-fn fuzz(corpus_dirs: &[PathBuf], objective_dir: PathBuf, broker_port: u16) -> Result<(), Error> {
+fn fuzz(corpus_dirs: &[PathBuf], objective_dir: PathBuf) -> Result<(), Error> {
     // 'While the stats are state, they are usually used in the broker - which is likely never restarted
     let stats = MultiStats::new(|s| println!("{}", s));
 
