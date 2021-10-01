@@ -29,7 +29,7 @@ use libafl::{
         power::{PowerMutationalStage, PowerSchedule},
     },
     state::{HasCorpus, HasMetadata, StdState},
-    stats::MultiStats,
+    stats::FastStats,
     Error,
 };
 
@@ -58,7 +58,7 @@ pub fn libafl_main() {
 /// The actual fuzzer
 fn fuzz(corpus_dirs: &[PathBuf], objective_dir: PathBuf, broker_port: u16) -> Result<(), Error> {
     // 'While the stats are state, they are usually used in the broker - which is likely never restarted
-    let stats = MultiStats::new(|s| println!("{}", s));
+    let stats = FastStats::new();
 
     // The event manager handle the various events generated during the fuzzing loop
     // such as the notification of the addition of a new item to the corpus

@@ -30,7 +30,7 @@ use libafl::{
     observers::{HitcountsMapObserver, StdMapObserver, TimeObserver},
     stages::mutational::StdMutationalStage,
     state::{HasCorpus, HasMetadata, StdState},
-    stats::MultiStats,
+    stats::FastStats,
     Error,
 };
 
@@ -57,7 +57,7 @@ pub fn libafl_main() {
 
     let shmem_provider = StdShMemProvider::new().expect("Failed to init shared memory");
 
-    let stats = MultiStats::new(|s| println!("{}", s));
+    let stats = FastStats::new();
 
     let mut run_client = |state: Option<StdState<_, _, _, _, _>>, mut restarting_mgr| {
         let corpus_dirs = &[PathBuf::from("./corpus")];

@@ -3,6 +3,9 @@
 pub mod multi;
 pub use multi::MultiStats;
 
+pub mod fast;
+pub use fast::FastStats;
+
 use serde::{Deserialize, Serialize};
 
 use alloc::{string::String, vec::Vec};

@@ -283,19 +283,10 @@ where
                 time: _,
                 executions: _,
             } => {
-                #[cfg(feature = "std")]
-                println!(
-                    "Received new Testcase from {} ({})",
-                    _client_id, client_config
-                );
 
                 let observers: OT = postcard::from_bytes( & observers_buf)?;
                 let _res = fuzzer.process_execution(state, self, input, &observers, &exit_kind, false)?;
 
-                #[cfg(feature = "std")]
-                if let Some(item) = _res.1 {
-                    println!("Added received Testcase as item #{}", item);
-                }
                 Ok(())
             }
             _ => Err(Error::Unknown(format!(
